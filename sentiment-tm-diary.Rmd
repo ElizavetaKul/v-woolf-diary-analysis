@@ -1,0 +1,475 @@
+---
+title: "Анализ дневников Вирджинии Вулф"
+author: "Елизавета Куликова"
+date: "2023-05-27"
+output:
+  html_document:
+    theme: readable
+# Датасет был подготовлен самостоятельно и находится ссылке: https://disk.yandex.ru/d/St03QUtECaWunQ       
+    
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE,  message = FALSE, include = TRUE, warning = FALSE, fig.align = "center")
+```
+
+# Введние 
+Дневниковые записи представляют собой интересный текстовый материал для сентимент анализа и тематического моделирования. В качестве датасета мной были выбраны дневники Вирджинии Вулф за период с 1918 по 1941 год (в переводе на русский язык). Подготовка данных включала загрузку текста дневников в формате txt, деление сплошного текста на отдельные файлы по годам написания и лемматизацию с использованием Mystem (для сентимент анализа), а также деление по году и дню недели написания (для тематического моделирования).
+
+
+Основной **целью проекта** ставится оценка возможности применения словарных методов сентимент анализа и структурного тематического моделирования к материалу личных дневников. Проведя анализ текстов с применением данных методов, выясним, коррелируют ли полученные результаты с нашим знанием о материале как читателей. 
+ 
+
+# Сентимент анализ. Словарный подход 
+
+```{r message=FALSE}
+# Активируем необходимые библиотеки 
+library(readtext)
+library(stringr)
+library(quanteda)
+library(quanteda.textplots)
+library(quanteda.textstats)
+library(ggplot2)
+library(tidyverse)
+#library(tidytext)
+devtools::install_github("dmafanasyev/rulexicon")
+library(rulexicon)
+library(ggthemes)
+library(scales)
+library(stm)
+library("reshape2")
+library(DT)
+library(Polychrome)
+library(wordcloud)
+```
+### Загружаем и исследуем данные
+```{r}
+diary <- readtext('/Users/elizaveta/Desktop/woolf_lemmatized/*')
+# Убираем расширение txt из id текста 
+diary$doc_id <- str_sub(diary$doc_id, start = 1, end = -5) 
+diary_by_years_corpus <- corpus(diary)
+
+# Таблица с данными содержит длинные тексты, сделаем удобную визуализацию
+datatable(diary, options = list(columnDefs = list(list(
+  targets = 2,
+  render = JS(
+    "function(diary, type, row, meta) {",
+    "return type === 'display' && diary.length > 40 ?",
+    "'<span title=\"' + diary + '\">' + diary.substr(0, 40) + '...</span>' : diary;",
+    "}")
+))), callback = JS('table.page(0).draw(false);'))
+```
+
+**Посмотрим общую статистику по объему текстов**
+```{r}
+diary_by_years_corpus_stat <- summary(diary_by_years_corpus) 
+diary_by_years_corpus_stat
+```
+**Токенизируем, выполним предобработку, создадим объект dfm**
+```{r}
+diary_tokens <- tokens(diary_by_years_corpus, remove_numbers = TRUE, remove_punct = TRUE, remove_symbols = TRUE) 
+diary_dfm <- dfm(diary_tokens)
+stopwords <- stopwords(language = "ru", source = "snowball", simplify = TRUE)
+diary_dfm <- dfm_remove(diary_dfm, stopwords)
+print(diary_dfm, max_ndoc=3)
+```
+**Визуализируем самые частотные слова:**
+```{r}
+set.seed(12455)
+textplot_wordcloud(diary_dfm, max_words = 120, color = "black",max_size = 10)
+```
+
+
+Среди самых частотных видим слова "книга", "читать", "думать", "мысль", "написать", "слово", что ярко отражает род деятельности автора дневников.  
+
+### Загрузим словарь rusentilex_2017
+Получим объект типа "quanteda dictionary"
+```{r}
+rusentilex <- as.data.frame(hash_rusentilex_2017, package='rulexicon')
+rusentilex <- rusentilex[, c('lemma', 'sentiment')]
+positive_words <- rusentilex[rusentilex$sentiment == 'positive', ]
+negative_words <- rusentilex[rusentilex$sentiment == 'negative', ]
+
+sentiment_dictionary <- dictionary(list(positive = positive_words$lemma, 
+                                        negative = negative_words$lemma))
+sentiment_dictionary
+```
+
+### Подсчитаем долю положительных и негативных слов, встретившихся в текстах
+
+```{r}
+dfm.sentiment <- dfm_lookup(diary_dfm, dictionary = sentiment_dictionary)
+dfm.sentiment.prop <- dfm_weight(dfm.sentiment, scheme = "prop")
+print(dfm.sentiment.prop, max_ndoc = 21)
+```
+
+
+**Построим график**
+
+```{r}
+sentiment <- convert(dfm.sentiment.prop, "data.frame") %>%
+  gather(positive, negative, key = "Polarity", value = "Share") %>% 
+  mutate(doc_id = as_factor(doc_id)) %>% 
+  rename(Text = doc_id)
+
+ggplot(sentiment, aes(Text, Share, fill = Polarity, group = Polarity)) + 
+  geom_bar(stat='identity', position = position_dodge(), size = 1) +
+  ggtitle("Virginia Woolf's Diary Sentiment") + 
+  theme(plot.title = element_text(face = "bold",
+                                  margin = margin(10, 0, 10, 0),
+                                  size = 14)) +
+  theme_fivethirtyeight() + 
+  theme(axis.text = element_text(color = 'gray8', size = 12),
+        axis.text.x = element_text(angle=90, vjust = 1))
+```
+
+
+На графике видим, что записи 1922 года выделяются как наиболее позитивные, что прослеживается и при чтении текста: в 1922 Вирджиния Вулф с воодушевлением пишет о выходе нового романа “Комната Джейкоба”, о своем философском взгляде на критику, которая более ее не тревожит, о (несвойственном ей) приподнятом состоянии духа. 
+
+Тон записей последних лет жизни писательницы скорее негативный: она часто упоминает военные события, говорит об упадке сил, о тяжести писательского труда и своей усталости от него. 
+
+**Переведем результаты в шкалу (-1, +1) и построим график**
+
+```{r}
+sentiment_rescaled <- convert(dfm.sentiment.prop, "data.frame") %>%
+  rename(Text = doc_id, Sentiment = positive) %>%
+  select(Text, Sentiment) %>%
+  mutate(Sentiment = rescale(Sentiment, to = c(-1,1))) %>%
+  mutate(Text = as_factor(Text))
+
+ggplot(sentiment_rescaled, aes(Text, Sentiment, group = 1)) + 
+  theme_fivethirtyeight() +
+  geom_line(size = 1) + 
+  geom_hline(yintercept = 0, linetype = "dashed", color = "lightgray") + 
+  theme(axis.text.x = element_text(size = 13, angle = 90, vjust = 1, hjust = 1)) + 
+  ggtitle("Compound sentiment scores")
+```
+
+"Скачки" показателей сентимента коррелируют с историей жизни писательницы, которая страдала от ментальных расстройств и чье настроение и взгляды на жизненные события менялись от воодушевления до полного упадка, что отражалось и в ее дневнике.
+
+### Посмотрим, какие слова внесли вклад в подсчет положительного и негативного сентимента 
+**Найденные в текстах положительные слова**
+```{r}
+freqs <- textstat_frequency(diary_dfm)
+validate_pos <- freqs |> 
+  filter(feature %in% sentiment_dictionary$positive)
+datatable(validate_pos)
+```
+
+**Найденные в текстах негативные слова**
+```{r}
+validate_neg <- freqs |> 
+  filter(feature %in% sentiment_dictionary$negative)
+datatable(validate_neg)
+```
+
+Можно заметить, что в топ списков попали некоторые слова, значения которых сильно зависят от контекста и их нельзя одозначно отнести к позитивными или негативным. Например, это слова "старый", "великий", "воскресение" и ряд других. 
+
+Посмотрим на их контексты, чтобы оценить, насколько отнесение этих слов к положительным или отрицательным релевантно для исследуемых данных. Проверены контексты для слов "старый", "великий", "воскресение", "внешний", "понимать", "зеленый", "легкий", "вчерашний". Выведем только некоторые примеры контекстов. 
+
+#### "Старый"
+```{r}
+kw_1 <- kwic(diary_tokens, 'старый', window = 2) # контексты в основном нейтральные или негативные
+datatable(kw_1)
+```
+#### "Великий"
+```{r}
+kw_2 <- kwic(diary_tokens, 'великий', window = 2) # контексты в основном нейтральные или положительные
+datatable(kw_2)
+```
+#### "Воскресение"
+```{r}
+kw_3 <- kwic(diary_tokens, 'воскресение', window = 2) # так лемматизировался день недели
+datatable(kw_3)
+```
+#### "Понимать"
+```{r}
+kw_4 <- kwic(diary_tokens, 'понимать', window = 2) # контексты нейтральные или присутствует отрицание "не"
+datatable(kw_4)
+```
+
+#### "Зеленый"
+```{r}
+kw_5 <- kwic(diary_tokens, 'зеленый', window = 2) 
+datatable(kw_5)
+```
+
+### Модифицирум словарь 
+
+Изменим словари, убрав некоторые слова, контексты которых не совпадают с меткой, но встречаются часто и вносят значительный вклад в сентимент, чтобы повысить точность анализа. 
+
+```{r}
+positive_words_mod <- subset(rusentilex[rusentilex$sentiment == 'positive', ], 
+                             lemma != 'старый' & lemma != 'воскресение' & lemma  !='понимать') 
+negative_words_mod <- subset(rusentilex[rusentilex$sentiment == 'negative', ], 
+                             lemma != 'старый' & lemma != 'великий' & lemma !='внешний' 
+                             & lemma !='вчерашний'  & lemma !='зеленый'  & lemma !='легкий')
+sentiment_dictionary_mod <- dictionary(list(positive = positive_words_mod$lemma, 
+                                            negative = negative_words_mod$lemma))
+```
+
+Выполним анализ по тому же алгоритму, но с отредактированным словарем.
+
+```{r}
+dfm.sentiment_2 <- dfm_lookup(diary_dfm, dictionary = sentiment_dictionary_mod)
+dfm.sentiment_2.prop <- dfm_weight(dfm.sentiment_2, scheme = "prop")
+
+sentiment_2 <- convert(dfm.sentiment_2.prop, "data.frame") %>%
+  gather(positive, negative, key = "Polarity", value = "Share") %>% 
+  mutate(doc_id = as_factor(doc_id)) %>% 
+  rename(Text = doc_id)
+
+ggplot(sentiment_2, aes(Text, Share, fill = Polarity, group = Polarity)) + 
+  geom_bar(stat='identity', position = position_dodge(), size = 1) +
+  ggtitle("Virginia Woolf's Diary Sentiment (modified dict)") + 
+  theme(plot.title = element_text(face = "bold",
+                                  margin = margin(10, 0, 10, 0),
+                                  size = 14)) +
+  theme_fivethirtyeight() + 
+  theme(axis.text = element_text(color = 'gray8', size = 12),
+        axis.text.x = element_text(angle=90, vjust = 1))
+
+```
+
+
+**В целом, изменения в результатах получились незначительные. Посмотрим на числовые значения:**
+
+**Анализ с базовым словарем**
+```{r}
+# анализ с базовым словарем
+print(dfm.sentiment.prop, max_ndoc = 21)
+```
+
+
+**Анализ с модифицированным словарем**
+```{r}
+# анализ с модифицированным словарем
+print(dfm.sentiment_2.prop, max_ndoc = 21)
+```
+
+
+# О чем писала в своих дневниках Вирджиния Вулф? 
+## Тематическое моделирование 
+
+**Загрузим нелемматизированные тексты, разделенные не только по годам, но и по дням недели. Из названий файлов извлечем год и день написания текста в качестве метаданных.**
+```{r}
+list_of_files <- list.files(path = "/Users/elizaveta/Desktop/woolf_texts",
+                            recursive = TRUE,
+                            pattern = "\\.txt$",
+                            full.names = TRUE)
+
+# в названиях файлов содежится информация о годе и дне написания текста
+# извлечем их, чтобы затем испорльзовать как docvars
+diary_df <- list_of_files %>%
+  set_names() %>% 
+  map_df(readtext, docvarsfrom = "filenames",  docvarnames = c('year', 'day', 'id')) 
+
+diary_df <- diary_df[, -5]
+datatable(diary_df)
+```
+
+**Выполним предобработку текстов: сделаем перменные year и day факторными, токенизируем и добавим к токенам коллокации.**
+```{r}
+# сделаем переменные year и day факторными 
+diary_df$year <- as.factor(diary_df$year)
+diary_df$day <- as.factor(diary_df$day)
+levels(diary_df$year)
+levels(diary_df$day)
+
+diary_by_day_corpus <- corpus(diary_df, text_field = 'text',
+                              docid_field = "doc_id")
+docvars(diary_by_day_corpus,  "text") <- diary_by_day_corpus$text
+```
+
+**Частотные коллокации: **
+```{r}
+# токенизируем и выполним предобработку 
+diary_by_day_tokens <- tokens(diary_by_day_corpus, remove_numbers = T, remove_punct = T, remove_symbols = T)
+
+diary_by_day_tokens <- diary_by_day_tokens %>% 
+  tokens_tolower() %>% 
+  tokens_remove(stopwords('russian'), padding = TRUE)   
+
+# вычислим коллокации
+colls <- textstat_collocations(diary_by_day_tokens,
+                               min_count = 5)
+datatable(colls)
+```
+
+
+```{r}
+# добавим к токенам коллокации
+diary_by_day_tokens <- tokens_compound(diary_by_day_tokens, colls, join = TRUE) %>% 
+  tokens_remove('')  
+
+# создадим dfm
+diary_by_day_dfm <- dfm(diary_by_day_tokens)
+
+## сократим число нулевых значений 
+diary_by_day_dfm_2 <- diary_by_day_dfm %>% 
+  dfm_keep(min_nchar = 3) %>% # удаляем токены, состоящие из одного символа
+  dfm_trim(min_docfreq = 0.01, max_docfreq = 0.40, #1% min, 40% max
+           docfreq_type = 'prop')
+
+# конвертируем DFM в нужный для STM формат
+out <- convert(diary_by_day_dfm_2, to = 'stm')
+```
+
+**Построим несколько моделей и выясним, какое значение K будет наиболе удачным.**
+```{r}
+set.seed(1111)
+K<-seq(5,20, by=5) 
+kresult <- searchK(out$documents, out$vocab, K, data=out$meta, prevalence =~ year, verbose=F)
+```
+
+
+```{r}
+# исследуем диагностический график
+print(kresult$results)
+options(repr.plot.width=6, repr.plot.height=6)
+plot(kresult)
+```
+
+
+**Также посмотрим coherence/exclusivity tradeoff.**
+
+```{r}
+plot <- data.frame("K" =K, 
+                   "Coherence" = unlist(kresult$results$semcoh),
+                   "Exclusivity" = unlist(kresult$results$exclus))
+
+plot <- melt(plot, id=c("K"))
+
+ggplot(plot, aes(K, value, color = variable)) +
+  geom_line(size = 1.5, show.legend = FALSE) +
+  facet_wrap(~variable,scales = "free_y") +
+  labs(x = "Number of topics")
+```
+
+**Построим модели с более коротким шагом.**
+```{r}
+set.seed(1111)
+K <-seq(10,16, by=1) 
+kresult_2 <- searchK(out$documents, out$vocab, K, data=out$meta, prevalence =~ year, verbose=F)
+
+print(kresult_2$results)
+options(repr.plot.width=6, repr.plot.height=6)
+plot(kresult_2)
+
+```
+
+
+```{r}
+plot_2 <- data.frame("K" =K, 
+                   "Coherence" = unlist(kresult_2$results$semcoh),
+                   "Exclusivity" = unlist(kresult_2$results$exclus))
+
+plot_2 <- melt(plot_2, id=c("K"))
+
+ggplot(plot_2, aes(K, value, color = variable)) +
+  geom_line(size = 1.5, show.legend = FALSE) +
+  facet_wrap(~variable,scales = "free_y") +
+  labs(x = "Number of topics")
+```
+
+
+Проведенные эксперименты с различной комбинацией аргументов (K и prevalence), которые не отражены здесь в целях экономии, показали, что наиболее удачным числом тем оказалось 14, а включение переменной day в качестве ковариаты улучшения результатов не дало. 
+
+**Построим модель для K = 14**
+```{r}
+# модель для K=14
+set.seed(1111)
+mod.14 <- stm::stm(out$documents, 
+                   out$vocab, K=14, 
+                   data=out$meta, 
+                   verbose = F,
+                   prevalence =~ year)
+                   
+plot(mod.14)
+```
+
+
+**Подробнее посмотрим на слова, характеризующие топики: **
+```{r}
+labels_14 <- labelTopics(mod.14)
+labels_14
+```
+
+
+
+**А также на распределение топиков по годам: **
+```{r}
+topicprop<-make.dt(mod.14, meta)
+topicprop <- topicprop %>% select(c(2:15))
+
+topic_proportion_per_year <- aggregate(topicprop, by = list(Year = diary_df$year), mean)
+
+fig <- melt(topic_proportion_per_year, id.vars = "Year")
+
+ggplot(fig, aes(x=Year, y=value, fill=variable)) + 
+  geom_bar(stat = "identity") + ylab("proportion") + 
+  theme_fivethirtyeight() +  
+  scale_fill_manual(values = paste0(palette36.colors(14), 'FF'), name = "Topic") + 
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  labs(title="Topic proportions over time")
+```
+
+
+
+**Обратим внимание на 1922 и 1939 годы, которые выделились по сентименту. В 1922 году преобладают темы 2 и 9. Посмотрим на представляющие их слова: **
+
+```{r}
+# сохраним слова с самым высоким значением frex и prob
+topwords <- data.frame("features" = t(labels_14$frex))
+topwords_2 <- data.frame("features" = t(labels_14$prob))
+topwords_new <- rbind(topwords, topwords_2)
+colnames(topwords_new) <- paste("Topic", c(1:14))
+```
+
+Topic 2
+```{r}
+set.seed(1245)
+wordcloud(topwords_new$`Topic 2`, max.words=Inf, rot.per=.2)
+```
+
+Topic 9
+```{r}
+set.seed(1245)
+wordcloud(topwords_new$`Topic 9`, max.words=Inf, rot.per=.2)
+```
+
+
+Можно предположить, что Тема 2 связана с отношением людей, прежде всего критиков, к творчеству писательницы. Тема 9 - с ее собственным отношением к писательству. В 1922 году она действительно пишет о любви к своему делу и вдохновении, что непосрдественно связано и с отзывами со стороны читателей. Заметим, что Тема 9 в 1930-е годы почти не представлена и этому периоду также соответствуют более негативные показатели сентимента.
+
+
+В 1939-1941 выделяется Тема 11, ключевые слова которой позволяют предположить, что она связана с войной. Однако она также представлена и в более ранние годы, что не позволяет проинтерпретировать ее как только военную.
+
+Topic 11
+```{r}
+set.seed(1245)
+wordcloud(topwords_new$`Topic 11`, max.words=Inf, rot.per=.2)
+```
+
+
+Хорошо интерпретируемой оказалась Тема 3, связанная с поедзками.
+
+Topic 3
+```{r}
+set.seed(1245)
+wordcloud(topwords_new$`Topic 3`, max.words=Inf, rot.per=.2)
+```
+
+В Теме 5 удачно выделилсь словоформы прошедшего времени, поэтому можно связать ее с часто встречающимися в дневниках записями о завершении работы над романом или другим произведением.
+
+Topic 5
+```{r}
+set.seed(1245)
+wordcloud(topwords_new$`Topic 5`, max.words=Inf, rot.per=.2)
+```
+
+# Итоги
+- Проведенный анализ позволяет получить общее представление о тоне и тематике дневниковых записей Вирджинии Вулф: "скачки" значений сентимента хорошо коррелируют с жизненной историей писательницы, которая страдала от ментальных расстройств и часто впадала в апатию, периодически сменяющуюся воодушевлением. При прочтении текстов можно заметить, что первая половина записей (примерно до 1931 года) действительно тяготеет к положительной тональности, тогда как записи последних лет жизни писательницы более негативны, что отразилось на графиках.
+
+- Многие записи в дневнике тематически однообразны, поэтому было сложно получить непересекающиеся топики. Однако основные темы, такие как "размышления", "писательство", "тяготы писательского труда", "дом и путешествия", так или иначе отразились в полученных топиках и представляющих их словах. 
+
+В дневниках писателей сохраняется много образности, они приближены к художественному тексту в силу рода деятельности автора, поэтому стоит помнить о сохраняющихся сложностях анализа: словарный подход не  “улавливает” языковую игру, метафоричные конструкции, иронию (коей в записях Вирджинии Вулф не мало). Однако стоит упомянуть, что ранее на этом же материале мы проводили сентимент анализ с использованием модели bert_rus_sentiment и ручная оценка показала, что словарный подход дал более точный результат. 
